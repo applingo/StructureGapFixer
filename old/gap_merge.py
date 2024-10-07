@@ -1,60 +1,63 @@
-from simtk.openmm.app import PDBFile, ForceField, Simulation
-from simtk.openmm import LangevinIntegrator, CustomExternalForce
-from simtk.unit import kelvin, picoseconds, nanometers, kilojoule_per_mole, nanometer
+from simtk.openmm.app import *
+from simtk.openmm import *
+from simtk.unit import *
 import mdtraj as md
 import numpy as np
+
 
 gap_start = 23
 gap_end = 30
 
-# 1. Load the original structure and AlphaFold predicted structure
+# 1. 元の構造とAlphaFoldで予測した構造を読み込む
 original_pdb = PDBFile('original_structure.pdb')
 alphafold_pdb = PDBFile('alphafold_structure.pdb')
 
-# 2. Structure alignment using MDTraj
+# 2. 構造のアライメント（MDTrajを使用）
 original_traj = md.load_pdb('original_structure.pdb')
 alphafold_traj = md.load_pdb('alphafold_structure.pdb')
 
-# Superposition for alignment
+# スーパーポジションによるアライメント
 alphafold_traj.superpose(original_traj, atom_indices=original_traj.topology.select('backbone'))
 
-# Example: Using residues near the gap (from 20 to 35)
+# 例として、ギャップの近傍残基として20から35を使用
 gap_nearby_residues = range(gap_start-10, gap_end+10)
 
-# Select backbone atoms near the gap
+# ギャップ近傍のバックボーン原子を選択
 gap_nearby_atoms = original_traj.topology.select(
     f'residue {gap_nearby_residues.start} to {gap_nearby_residues.stop} and backbone'
 )
 
-# Superposition using only atoms near the gap
+# スーパーポジションによるアライメント（ギャップ近傍の原子のみ）
 alphafold_traj.superpose(original_traj, atom_indices=gap_nearby_atoms)
 
-# 3. Replace the coordinates for missing residues
-# Example: The missing residues are numbered from 23 to 30
+
+
+# 3. 欠損部分の残基番号を指定して座標を置換
+# 例として、欠損部分が残基番号23から30とします
 missing_residues = range(gap_start, gap_end)
 
 for residue in missing_residues:
-    # Get the atoms for the corresponding residue in the original structure
+    # 元の構造の該当残基の原子を取得
     original_atoms = original_traj.topology.select(f'residue {residue}')
-    # Replace the coordinates with those from the AlphaFold structure
+    # AlphaFold構造の対応する原子の座標で置換
     original_traj.xyz[0, original_atoms, :] = alphafold_traj.xyz[0, original_atoms, :]
 
-# Get the new positions after replacement
+# 置換後の座標を取得
 new_positions = original_traj.openmm_positions(0)
 
-# 4. Perform energy minimization and local MD simulation with OpenMM
+# 4. OpenMMでエネルギー最小化と局所的なMDシミュレーションを行う
 
-# Load the force field
+# フォースフィールドの読み込み
 forcefield = ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
 
-# Build the system
+# 系の構築
 system = forcefield.createSystem(original_pdb.topology, constraints=HBonds)
 
-# Set up constraints to only move atoms near the gap
-# Compute the center of the gap
+# ギャップ周辺の原子のみを可動にするための拘束を設定
+# ギャップ中心の座標を計算
 gap_center = np.mean([new_positions[i] for i in original_traj.topology.select(f'residue {residue}')], axis=0)
 
-# Calculate distances from each atom to the gap center and constrain atoms further away
+# 各原子との距離を計算し、一定距離以上の原子に拘束をかける
 distance_threshold = 1.0 * nanometers  # 10Å
 force_constant = 1000.0 * kilojoule_per_mole / nanometer**2
 position_restraint = CustomExternalForce('0.5 * k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)')
@@ -71,18 +74,18 @@ for atom in original_pdb.topology.atoms():
 
 system.addForce(position_restraint)
 
-# Set up the simulation
+# シミュレーションの設定
 integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
 simulation = Simulation(original_pdb.topology, system, integrator)
 simulation.context.setPositions(new_positions)
 
-# Perform energy minimization
+# エネルギー最小化
 simulation.minimizeEnergy()
 
-# Run short MD simulation if needed
+# 必要に応じて短いMDシミュレーションを実行
 simulation.step(1000)
 
-# Save the results
+# 結果の保存
 state = simulation.context.getState(getPositions=True)
 with open('refined_structure.pdb', 'w') as f:
     PDBFile.writeFile(simulation.topology, state.getPositions(), f)
